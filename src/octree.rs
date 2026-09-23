@@ -145,37 +145,43 @@ impl D3Q27Lattice {
             let y = Self::get_coord_y(i);
             let z = Self::get_coord_z(i);
             let p_center = self.current_pressure[i];
+            let cell_dna_raw = self.dna[i];
+            let cell_tpes = Tpes::from_u32(cell_dna_raw);
 
             let mut higher_count: i16 = 0;
             let mut lower_count: i16 = 0;
             let mut max_delta: u8 = 0;
 
-            for &(dx, dy, dz) in &NEIGHBORS_3D {
-                if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
-                    let p_neighbor = self.current_pressure[n_idx];
+            if cell_dna_raw == elem_zero_raw || cell_tpes.structure() == 3 {
+                for &(dx, dy, dz) in &NEIGHBORS_3D {
+                    if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                        let p_neighbor = self.current_pressure[n_idx];
 
-                    if p_neighbor > p_center {
-                        higher_count += 1;
-                        let delta = p_neighbor - p_center;
-                        if delta > max_delta {
-                            max_delta = delta;
-                        }
-                    } else if p_neighbor < p_center {
-                        lower_count += 1;
-                        let delta = p_center - p_neighbor;
-                        if delta > max_delta {
-                            max_delta = delta;
+                        if p_neighbor > p_center {
+                            higher_count += 1;
+                            let delta = p_neighbor - p_center;
+                            if delta > max_delta {
+                                max_delta = delta;
+                            }
+                        } else if p_neighbor < p_center {
+                            lower_count += 1;
+                            let delta = p_center - p_neighbor;
+                            if delta > max_delta {
+                                max_delta = delta;
+                            }
                         }
                     }
                 }
             }
 
-            let next_p = (p_center as i16 + higher_count - lower_count).clamp(0, 8) as u8;
-            self.next_pressure[i] = next_p;
+            if cell_dna_raw != elem_zero_raw {
+                self.next_pressure[i] = p_center;
+            } else {
+                let next_p = (p_center as i16 + higher_count - lower_count).clamp(0, 8) as u8;
+                self.next_pressure[i] = next_p;
+            }
 
             // Phase 3 Check for Tensegrity Shatter
-            let cell_dna_raw = self.dna[i];
-            let cell_tpes = Tpes::from_u32(cell_dna_raw);
 
             if cell_tpes.structure() == 3 && max_delta > 6 {
                 let p_apertures = cell_tpes.positrons() as usize;
@@ -385,6 +391,27 @@ mod tests {
         assert_eq!(D3Q27Lattice::get_neighbor_index(0, 0, 0, -1, 0, 0), None);
         assert_eq!(D3Q27Lattice::get_neighbor_index(31, 31, 31, 1, 0, 0), None);
         assert!(D3Q27Lattice::get_neighbor_index(10, 10, 10, 1, 0, 0).is_some());
+    }
+
+    #[test]
+    fn test_particle_pressure_pinning() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(100);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        // Place Positron (ID 0) at cell (10, 10, 10)
+        let positron = get_tpes_by_id(0).unwrap(); // Positron P:1, E:0
+        let idx = D3Q27Lattice::get_index(10, 10, 10);
+        lattice.set_dna(idx, positron.as_u32());
+        lattice.set_current_pressure(idx, 3);
+
+        // Neighbor cells have pressure 1
+        lattice.step(&source_bus, &sink_bus);
+
+        // Phase 1 injection for Positron (P=1, E=0): cur_p = 3 + 1 - 0 = 4.
+        // Phase 2 advection: because dna != elem_zero_raw, next_p is pinned to cur_p (4), NOT advection gather result.
+        // After buffer swap, current_pressure should be 4.
+        assert_eq!(lattice.get_current_pressure(idx), 4);
     }
 
     #[test]
