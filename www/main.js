@@ -292,15 +292,16 @@ async function run() {
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   const tempMatrix = new THREE.Matrix4();
-  const slicePlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 15.5);
+  const slicePlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -15.5);
   const planePoint = new THREE.Vector3();
 
   window.addEventListener('click', (event) => {
     // Only raycast if click was on canvas
     if (event.target.tagName !== 'CANVAS') return;
 
-    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    const rect = event.target.getBoundingClientRect();
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
     raycaster.setFromCamera(mouse, camera);
 
@@ -340,10 +341,10 @@ async function run() {
     // 3. Fallback to raycastBoxMesh
     const boxIntersects = raycaster.intersectObject(raycastBoxMesh);
     if (boxIntersects.length > 0) {
-      const pt = boxIntersects[0].point;
-      const gx = Math.min(31, Math.max(0, Math.round(pt.x)));
-      const gy = Math.min(31, Math.max(0, Math.round(pt.y)));
-      const gz = Math.min(31, Math.max(0, Math.round(pt.z)));
+      const localPt = raycastBoxMesh.worldToLocal(boxIntersects[0].point.clone());
+      const gx = Math.min(31, Math.max(0, Math.round(localPt.x + 15.5)));
+      const gy = Math.min(31, Math.max(0, Math.round(localPt.y + 15.5)));
+      const gz = Math.min(31, Math.max(0, Math.round(localPt.z + 15.5)));
 
       const idx = D3Q27Lattice.get_index(gx, gy, gz);
       lattice.set_dna(idx, selectedTpes.as_u32());
