@@ -73,11 +73,16 @@ impl D3Q27Lattice {
         index / (LATTICE_SIZE * LATTICE_SIZE)
     }
 
-    pub fn get_neighbor_index(x: usize, y: usize, z: usize, dx: i32, dy: i32, dz: i32) -> usize {
-        let nx = (x as i32 + dx).rem_euclid(LATTICE_SIZE as i32) as usize;
-        let ny = (y as i32 + dy).rem_euclid(LATTICE_SIZE as i32) as usize;
-        let nz = (z as i32 + dz).rem_euclid(LATTICE_SIZE as i32) as usize;
-        Self::get_index(nx, ny, nz)
+    pub fn get_neighbor_index(x: usize, y: usize, z: usize, dx: i32, dy: i32, dz: i32) -> Option<usize> {
+        let nx = x as i32 + dx;
+        let ny = y as i32 + dy;
+        let nz = z as i32 + dz;
+
+        if nx < 0 || nx >= LATTICE_SIZE as i32 || ny < 0 || ny >= LATTICE_SIZE as i32 || nz < 0 || nz >= LATTICE_SIZE as i32 {
+            None
+        } else {
+            Some(Self::get_index(nx as usize, ny as usize, nz as usize))
+        }
     }
 
     pub fn get_dna(&self, index: usize) -> u32 {
@@ -146,20 +151,21 @@ impl D3Q27Lattice {
             let mut max_delta: u8 = 0;
 
             for &(dx, dy, dz) in &NEIGHBORS_3D {
-                let n_idx = Self::get_neighbor_index(x, y, z, dx, dy, dz);
-                let p_neighbor = self.current_pressure[n_idx];
+                if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                    let p_neighbor = self.current_pressure[n_idx];
 
-                if p_neighbor > p_center {
-                    higher_count += 1;
-                    let delta = p_neighbor - p_center;
-                    if delta > max_delta {
-                        max_delta = delta;
-                    }
-                } else if p_neighbor < p_center {
-                    lower_count += 1;
-                    let delta = p_center - p_neighbor;
-                    if delta > max_delta {
-                        max_delta = delta;
+                    if p_neighbor > p_center {
+                        higher_count += 1;
+                        let delta = p_neighbor - p_center;
+                        if delta > max_delta {
+                            max_delta = delta;
+                        }
+                    } else if p_neighbor < p_center {
+                        lower_count += 1;
+                        let delta = p_center - p_neighbor;
+                        if delta > max_delta {
+                            max_delta = delta;
+                        }
                     }
                 }
             }
@@ -178,18 +184,20 @@ impl D3Q27Lattice {
                 // Revert core to Element Zero
                 self.dna[i] = elem_zero_raw;
 
-                let mut n_idx_list = [0usize; 26];
-                for (n_pos, &(dx, dy, dz)) in NEIGHBORS_3D.iter().enumerate() {
-                    n_idx_list[n_pos] = Self::get_neighbor_index(x, y, z, dx, dy, dz);
+                let mut valid_neighbors = Vec::with_capacity(26);
+                for &(dx, dy, dz) in &NEIGHBORS_3D {
+                    if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                        valid_neighbors.push(n_idx);
+                    }
                 }
 
                 let mut placed_p = 0;
                 let mut placed_e = 0;
 
                 // Distribute P apertures
-                for n_pos in 0..26 {
+                for &n_idx in &valid_neighbors {
                     if placed_p < p_apertures {
-                        self.dna[n_idx_list[n_pos]] = positron_raw;
+                        self.dna[n_idx] = positron_raw;
                         placed_p += 1;
                     } else {
                         break;
@@ -197,9 +205,9 @@ impl D3Q27Lattice {
                 }
 
                 // Distribute E apertures into subsequent available neighbor cells
-                for n_pos in placed_p..26 {
+                for &n_idx in valid_neighbors.iter().skip(placed_p) {
                     if placed_e < e_apertures {
-                        self.dna[n_idx_list[n_pos]] = electron_raw;
+                        self.dna[n_idx] = electron_raw;
                         placed_e += 1;
                     } else {
                         break;
@@ -216,6 +224,19 @@ impl D3Q27Lattice {
                 if excess_e > 0 {
                     sink_bus.add(excess_e);
                 }
+            }
+        }
+
+        // --- Phase 4: Boundary Absorption (Infinite Sink) ---
+        for i in 0..TOTAL_CELLS {
+            let x = Self::get_coord_x(i);
+            let y = Self::get_coord_y(i);
+            let z = Self::get_coord_z(i);
+
+            if (x == 0 || x == LATTICE_SIZE - 1 || y == 0 || y == LATTICE_SIZE - 1 || z == 0 || z == LATTICE_SIZE - 1)
+                && self.dna[i] == elem_zero_raw
+            {
+                self.next_pressure[i] = 1;
             }
         }
 
@@ -350,12 +371,45 @@ mod tests {
         let electron = get_tpes_by_id(1).unwrap();
 
         // First 2 neighbors get Positrons, 3rd gets Electron
-        let n0 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[0].0, NEIGHBORS_3D[0].1, NEIGHBORS_3D[0].2);
-        let n1 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[1].0, NEIGHBORS_3D[1].1, NEIGHBORS_3D[1].2);
-        let n2 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[2].0, NEIGHBORS_3D[2].1, NEIGHBORS_3D[2].2);
+        let n0 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[0].0, NEIGHBORS_3D[0].1, NEIGHBORS_3D[0].2).unwrap();
+        let n1 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[1].0, NEIGHBORS_3D[1].1, NEIGHBORS_3D[1].2).unwrap();
+        let n2 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[2].0, NEIGHBORS_3D[2].1, NEIGHBORS_3D[2].2).unwrap();
 
         assert_eq!(lattice.get_dna(n0), positron.as_u32());
         assert_eq!(lattice.get_dna(n1), positron.as_u32());
         assert_eq!(lattice.get_dna(n2), electron.as_u32());
+    }
+
+    #[test]
+    fn test_neighbor_index_out_of_bounds() {
+        assert_eq!(D3Q27Lattice::get_neighbor_index(0, 0, 0, -1, 0, 0), None);
+        assert_eq!(D3Q27Lattice::get_neighbor_index(31, 31, 31, 1, 0, 0), None);
+        assert!(D3Q27Lattice::get_neighbor_index(10, 10, 10, 1, 0, 0).is_some());
+    }
+
+    #[test]
+    fn test_phase_4_infinite_sink() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(0);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        let corner_idx = D3Q27Lattice::get_index(0, 0, 0);
+        lattice.set_current_pressure(corner_idx, 5); // Set pressure high on edge cell
+
+        lattice.step(&source_bus, &sink_bus);
+
+        // Edge cell (0,0,0) with Element Zero DNA should be forced to next_pressure = 1 (and after swap current_pressure = 1)
+        assert_eq!(lattice.get_current_pressure(corner_idx), 1);
+
+        // Edge cell with non-Element Zero particle should NOT be forced to 1
+        let proton = get_tpes_by_id(100).unwrap();
+        lattice.set_dna(corner_idx, proton.as_u32());
+        lattice.set_current_pressure(corner_idx, 5);
+
+        lattice.step(&source_bus, &sink_bus);
+        // Phase 1 injection for proton: cur_p = 5 + 2 - 1 = 6
+        // Advection: outer boundary cell, next_p calculated normally, not forced to 1
+        assert_ne!(lattice.get_dna(corner_idx), get_tpes_by_id(2).unwrap().as_u32());
+        // Since it's not element zero, it won't be overridden by Phase 4
     }
 }

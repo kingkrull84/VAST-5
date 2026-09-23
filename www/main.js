@@ -155,15 +155,19 @@ async function run() {
 
       dummy.position.set(x, y, z);
 
-      // Threshold condition: ONLY render if particle, extreme vacuum (0), or high spike (>= 5)
-      const passesThreshold = (dna !== elemZeroRaw) || (p === 0) || (p >= 5);
-      const isVisible = passesThreshold && !(isSliced && z > 15);
-
-      if (isVisible) {
-        activeCount++;
-        dummy.scale.set(1, 1, 1);
-      } else {
+      if (isSliced && z > 15) {
         dummy.scale.set(0, 0, 0);
+      } else if (dna !== elemZeroRaw) {
+        dummy.scale.set(1, 1, 1);
+        activeCount++;
+      } else if (p === 1) {
+        dummy.scale.set(0, 0, 0);
+      } else {
+        const intensity = Math.min(1.0, Math.abs(p - 1) * 0.33);
+        dummy.scale.set(intensity, intensity, intensity);
+        if (intensity > 0) {
+          activeCount++;
+        }
       }
 
       dummy.updateMatrix();
