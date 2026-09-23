@@ -37,12 +37,14 @@ async function run() {
   // State
   let selectedId = 100; // Default Proton
   let isPlaying = false;
+  let vectorMode = false;
 
   // DOM Elements
   const container = document.getElementById('canvas-container');
   const btnPlayPause = document.getElementById('btn-play-pause');
   const btnStep = document.getElementById('btn-step');
   const btnWireframe = document.getElementById('btn-wireframe');
+  const btnVectorMode = document.getElementById('btn-vector-mode');
   const chkSliceZ = document.getElementById('chk-slice-z');
   const selectedLabel = document.getElementById('selected-label');
   const statSource = document.getElementById('stat-source');
@@ -112,11 +114,21 @@ async function run() {
   const material = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1 });
   const instancedMesh = new THREE.InstancedMesh(geometry, material, totalCells);
 
-  // ADD INSTANCE MESH TO SCENE
+  // InstancedMesh Setup for Vector Flow Cones
+  const coneGeometry = new THREE.ConeGeometry(0.2, 0.8, 4);
+  coneGeometry.translate(0, 0.4, 0);
+  const vectorMaterial = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1 });
+  const vectorInstancedMesh = new THREE.InstancedMesh(coneGeometry, vectorMaterial, totalCells);
+
+  // ADD INSTANCE MESHES TO SCENE
   scene.add(instancedMesh);
+  scene.add(vectorInstancedMesh);
 
   const dummy = new THREE.Object3D();
+  const vectorDummy = new THREE.Object3D();
   const color = new THREE.Color();
+  const upVector = new THREE.Vector3(0, 1, 0);
+  const flowVector = new THREE.Vector3();
 
   // Helper colors for DNA / pressure visualization
   function getCellColor(dnaVal, pressure) {
@@ -132,6 +144,13 @@ async function run() {
     if (struct === 3) return color.setHex(0xffaa00); // Proton / Neutron S3 core
     if (struct === 4) return color.setHex(0x00ff88); // S4 Atom
     return color.setHex(0xaa55ff);
+  }
+
+  function getP(x, y, z, pressureArray) {
+    if (x < 0 || x >= 32 || y < 0 || y >= 32 || z < 0 || z >= 32) {
+      return 1;
+    }
+    return pressureArray[x + y * 32 + z * 1024];
   }
 
   function updateMeshState() {
@@ -154,29 +173,72 @@ async function run() {
       const z = Math.floor(i / 1024);
 
       dummy.position.set(x, y, z);
+      vectorDummy.position.set(x, y, z);
 
-      if (isSliced && z > 15) {
-        dummy.scale.set(0, 0, 0);
-      } else if (dna !== elemZeroRaw) {
-        dummy.scale.set(1, 1, 1);
-        activeCount++;
-      } else if (p === 1) {
-        dummy.scale.set(0, 0, 0);
+      if (vectorMode) {
+        if (dna !== elemZeroRaw) {
+          vectorDummy.scale.set(0, 0, 0);
+          if (isSliced && z > 15) {
+            dummy.scale.set(0, 0, 0);
+          } else {
+            dummy.scale.set(1, 1, 1);
+            activeCount++;
+          }
+        } else {
+          dummy.scale.set(0, 0, 0);
+          if (isSliced && z > 15) {
+            vectorDummy.scale.set(0, 0, 0);
+          } else {
+            const flowX = getP(x - 1, y, z, pressureArray) - getP(x + 1, y, z, pressureArray);
+            const flowY = getP(x, y - 1, z, pressureArray) - getP(x, y + 1, z, pressureArray);
+            const flowZ = getP(x, y, z - 1, pressureArray) - getP(x, y, z + 1, pressureArray);
+
+            flowVector.set(flowX, flowY, flowZ);
+            const flowMag = flowVector.length();
+
+            if (flowMag > 0) {
+              flowVector.divideScalar(flowMag); // Normalize flow direction
+              vectorDummy.quaternion.setFromUnitVectors(upVector, flowVector);
+              const s = Math.min(1.0, flowMag * 0.3);
+              vectorDummy.scale.set(s, s, s);
+              activeCount++;
+            } else {
+              vectorDummy.scale.set(0, 0, 0);
+            }
+          }
+        }
       } else {
-        const intensity = Math.min(1.0, Math.abs(p - 1) * 0.33);
-        dummy.scale.set(intensity, intensity, intensity);
-        if (intensity > 0) {
+        vectorDummy.scale.set(0, 0, 0);
+        if (isSliced && z > 15) {
+          dummy.scale.set(0, 0, 0);
+        } else if (dna !== elemZeroRaw) {
+          dummy.scale.set(1, 1, 1);
           activeCount++;
+        } else if (p === 1) {
+          dummy.scale.set(0, 0, 0);
+        } else {
+          const intensity = Math.min(1.0, Math.abs(p - 1) * 0.33);
+          dummy.scale.set(intensity, intensity, intensity);
+          if (intensity > 0) {
+            activeCount++;
+          }
         }
       }
 
       dummy.updateMatrix();
       instancedMesh.setMatrixAt(i, dummy.matrix);
       instancedMesh.setColorAt(i, getCellColor(dna, p));
+
+      vectorDummy.updateMatrix();
+      vectorInstancedMesh.setMatrixAt(i, vectorDummy.matrix);
+      vectorInstancedMesh.setColorAt(i, getCellColor(dna, p));
     }
 
     instancedMesh.instanceMatrix.needsUpdate = true;
     if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+
+    vectorInstancedMesh.instanceMatrix.needsUpdate = true;
+    if (vectorInstancedMesh.instanceColor) vectorInstancedMesh.instanceColor.needsUpdate = true;
 
     statSource.textContent = sourceBus.get().toString();
     statSink.textContent = sinkBus.get().toString();
@@ -206,7 +268,15 @@ async function run() {
 
   btnWireframe.addEventListener('click', () => {
     material.wireframe = !material.wireframe;
+    vectorMaterial.wireframe = !vectorMaterial.wireframe;
   });
+
+  if (btnVectorMode) {
+    btnVectorMode.addEventListener('click', () => {
+      vectorMode = !vectorMode;
+      updateMeshState();
+    });
+  }
 
   // Raycasting for Cell Selection and Element Injection
   const raycaster = new THREE.Raycaster();
