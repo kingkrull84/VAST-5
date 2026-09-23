@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>V.A.S.T. 5 - Universal Physics Simulation</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background-color: #0b0e14;
+        color: #e6edf3;
+        overflow: hidden;
+      }
+      #canvas-container {
+        width: 100vw;
+        height: 100vh;
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 1;
+      }
+      #controls-panel {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 10;
+        background: rgba(22, 27, 34, 0.85);
+        backdrop-filter: blur(8px);
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 16px;
+        width: 300px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      }
+      #controls-panel h1 {
+        font-size: 1.1rem;
+        margin-bottom: 8px;
+        color: #58a6ff;
+      }
+      .btn-group {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button {
+        background: #238636;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      button:hover {
+        background: #2ea043;
+      }
+      button.secondary {
+        background: #21262d;
+        border: 1px solid #30363d;
+        color: #c9d1d9;
+      }
+      button.secondary:hover {
+        background: #30363d;
+      }
+      .stat-row {
+        font-size: 0.85rem;
+        margin-top: 6px;
+        color: #8b949e;
+      }
+      .stat-row span {
+        color: #f0f6fc;
+        font-weight: 600;
+      }
+      #manifest-panel {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        z-index: 10;
+        background: rgba(22, 27, 34, 0.85);
+        backdrop-filter: blur(8px);
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        padding: 16px;
+        width: 280px;
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      }
+      #manifest-panel h2 {
+        font-size: 1rem;
+        margin-bottom: 12px;
+        color: #79c0ff;
+        border-bottom: 1px solid #30363d;
+        padding-bottom: 6px;
+      }
+      .manifest-item {
+        padding: 8px 10px;
+        margin-bottom: 6px;
+        border-radius: 6px;
+        background: #161b22;
+        border: 1px solid #30363d;
+        cursor: pointer;
+        font-size: 0.85rem;
+        transition: all 0.15s ease;
+      }
+      .manifest-item:hover {
+        border-color: #58a6ff;
+        background: #1f242c;
+      }
+      .manifest-item.selected {
+        border-color: #58a6ff;
+        background: #1f6feb22;
+        box-shadow: 0 0 0 1px #58a6ff;
+      }
+      .manifest-item .item-title {
+        font-weight: 600;
+        color: #f0f6fc;
+      }
+      .manifest-item .item-desc {
+        font-size: 0.75rem;
+        color: #8b949e;
+        margin-top: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="canvas-container"></div>
+
+    <div id="controls-panel">
+      <h1>V.A.S.T. 5 Simulation</h1>
+      <div class="stat-row">Selected Element: <span id="selected-label">Element Zero (ID 2)</span></div>
+      <div class="stat-row">Global Source Bus: <span id="stat-source">0</span></div>
+      <div class="stat-row">Global Sink Bus: <span id="stat-sink">0</span></div>
+      <div class="stat-row">Active Cells Rendered: <span id="stat-active">0 / 32768</span></div>
+
+      <div class="btn-group">
+        <button id="btn-play-pause">Play</button>
+        <button id="btn-step" class="secondary">Step</button>
+      </div>
+    </div>
+
+    <div id="manifest-panel">
+      <h2>USS Manifest</h2>
+      <div id="manifest-list"></div>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

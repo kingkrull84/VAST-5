@@ -1,0 +1,18 @@
+{
+  "name": "vast-5-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.186.0",
+    "vast_5": "file:../pkg"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
