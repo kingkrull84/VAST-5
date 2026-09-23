@@ -146,6 +146,12 @@ async function run() {
     return color.setHex(0xaa55ff);
   }
 
+  function getVectorColor(p) {
+    if (p > 1) return color.setHex(0xff5522);
+    if (p < 1) return color.setHex(0x00aaff);
+    return color.setHex(0x00ff88);
+  }
+
   function getP(x, y, z, pressureArray) {
     if (x < 0 || x >= 32 || y < 0 || y >= 32 || z < 0 || z >= 32) {
       return 1;
@@ -231,7 +237,11 @@ async function run() {
 
       vectorDummy.updateMatrix();
       vectorInstancedMesh.setMatrixAt(i, vectorDummy.matrix);
-      vectorInstancedMesh.setColorAt(i, getCellColor(dna, p));
+      if (dna === elemZeroRaw) {
+        vectorInstancedMesh.setColorAt(i, getVectorColor(p));
+      } else {
+        vectorInstancedMesh.setColorAt(i, getCellColor(dna, p));
+      }
     }
 
     instancedMesh.instanceMatrix.needsUpdate = true;
@@ -281,6 +291,9 @@ async function run() {
   // Raycasting for Cell Selection and Element Injection
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
+  const tempMatrix = new THREE.Matrix4();
+  const slicePlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 15.5);
+  const planePoint = new THREE.Vector3();
 
   window.addEventListener('click', (event) => {
     // Only raycast if click was on canvas
@@ -291,18 +304,40 @@ async function run() {
 
     raycaster.setFromCamera(mouse, camera);
 
-    // Try raycasting instanced mesh first
-    const instIntersects = raycaster.intersectObject(instancedMesh);
-    if (instIntersects.length > 0 && instIntersects[0].instanceId !== undefined) {
-      const selectedTpes = get_tpes_by_id(selectedId);
-      if (selectedTpes) {
-        lattice.set_dna(instIntersects[0].instanceId, selectedTpes.as_u32());
-        updateMeshState();
-        return;
+    const selectedTpes = get_tpes_by_id(selectedId);
+    if (!selectedTpes) return;
+
+    // 1. Raycast against instancedMesh and vectorInstancedMesh
+    const instanceIntersects = raycaster.intersectObjects([instancedMesh, vectorInstancedMesh]);
+    for (let i = 0; i < instanceIntersects.length; i++) {
+      const hit = instanceIntersects[i];
+      if (hit.instanceId !== undefined) {
+        hit.object.getMatrixAt(hit.instanceId, tempMatrix);
+        if (tempMatrix.getMaxScaleOnAxis() > 0) {
+          lattice.set_dna(hit.instanceId, selectedTpes.as_u32());
+          updateMeshState();
+          return;
+        }
       }
     }
 
-    // Otherwise raycast the bounding box volume to get closest integer grid [x, y, z]
+    // 2. If no visible instance hit AND chkSliceZ is checked, raycast against Z slice plane
+    if (chkSliceZ && chkSliceZ.checked) {
+      if (raycaster.ray.intersectPlane(slicePlane, planePoint)) {
+        if (planePoint.x >= -0.5 && planePoint.x <= 31.5 && planePoint.y >= -0.5 && planePoint.y <= 31.5) {
+          const gx = Math.min(31, Math.max(0, Math.round(planePoint.x)));
+          const gy = Math.min(31, Math.max(0, Math.round(planePoint.y)));
+          const gz = 15;
+
+          const idx = D3Q27Lattice.get_index(gx, gy, gz);
+          lattice.set_dna(idx, selectedTpes.as_u32());
+          updateMeshState();
+          return;
+        }
+      }
+    }
+
+    // 3. Fallback to raycastBoxMesh
     const boxIntersects = raycaster.intersectObject(raycastBoxMesh);
     if (boxIntersects.length > 0) {
       const pt = boxIntersects[0].point;
@@ -311,11 +346,8 @@ async function run() {
       const gz = Math.min(31, Math.max(0, Math.round(pt.z)));
 
       const idx = D3Q27Lattice.get_index(gx, gy, gz);
-      const selectedTpes = get_tpes_by_id(selectedId);
-      if (selectedTpes) {
-        lattice.set_dna(idx, selectedTpes.as_u32());
-        updateMeshState();
-      }
+      lattice.set_dna(idx, selectedTpes.as_u32());
+      updateMeshState();
     }
   });
 
