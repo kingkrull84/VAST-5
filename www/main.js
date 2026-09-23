@@ -42,6 +42,8 @@ async function run() {
   const container = document.getElementById('canvas-container');
   const btnPlayPause = document.getElementById('btn-play-pause');
   const btnStep = document.getElementById('btn-step');
+  const btnWireframe = document.getElementById('btn-wireframe');
+  const chkSlice = document.getElementById('chk-slice');
   const selectedLabel = document.getElementById('selected-label');
   const statSource = document.getElementById('stat-source');
   const statSink = document.getElementById('stat-sink');
@@ -107,10 +109,9 @@ async function run() {
 
   // InstancedMesh Setup for 32x32x32 Grid
   const geometry = new THREE.BoxGeometry(0.85, 0.85, 0.85);
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1 });
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1, wireframe: false });
   const instancedMesh = new THREE.InstancedMesh(geometry, material, totalCells);
 
-  // ADD INSTANCE MESH TO SCENE
   scene.add(instancedMesh);
 
   const dummy = new THREE.Object3D();
@@ -119,9 +120,9 @@ async function run() {
   // Helper colors for DNA / pressure visualization
   function getCellColor(dnaVal, pressure) {
     if (dnaVal === elemZeroRaw) {
-      // Color pressure gradient from dark blue (0) to bright cyan/white (8)
+      if (pressure === 0) return color.setHex(0x1a2332); // Extreme Vacuum
       const t = pressure / 8.0;
-      return color.setHSL(0.55 + t * 0.1, 0.8, 0.2 + t * 0.6);
+      return color.setHSL(0.55 + t * 0.1, 0.9, 0.3 + t * 0.5); // High pressure spikes
     }
     const tpes = Tpes.from_u32(dnaVal);
     const struct = tpes.structure();
@@ -139,6 +140,7 @@ async function run() {
     const pressureArray = new Uint8Array(memory.buffer, pressurePtr, totalCells);
     const dnaArray = new Uint32Array(memory.buffer, dnaPtr, totalCells);
 
+    const isSliceEnabled = chkSlice.checked;
     let activeCount = 0;
 
     for (let i = 0; i < totalCells; i++) {
@@ -149,16 +151,24 @@ async function run() {
       const y = Math.floor(i / 32) % 32;
       const z = Math.floor(i / 1024);
 
-      // Hide cell if Element Zero AND pressure is 1
-      if (dna === elemZeroRaw && p === 1) {
-        dummy.position.set(x, y, z);
-        dummy.scale.set(0, 0, 0);
-      } else {
+      // Check visual thresholding conditions:
+      const hasParticle = (dna !== elemZeroRaw);
+      const isExtremeVacuum = (p === 0);
+      const isHighPressureSpike = (p >= 5);
+
+      const passesThreshold = hasParticle || isExtremeVacuum || isHighPressureSpike;
+      const passesSlice = !isSliceEnabled || (z <= 15);
+
+      if (passesThreshold && passesSlice) {
         activeCount++;
         dummy.position.set(x, y, z);
         const scale = 0.5 + (p / 8.0) * 0.4;
         dummy.scale.set(scale, scale, scale);
+      } else {
+        dummy.position.set(x, y, z);
+        dummy.scale.set(0, 0, 0);
       }
+
       dummy.updateMatrix();
       instancedMesh.setMatrixAt(i, dummy.matrix);
       instancedMesh.setColorAt(i, getCellColor(dna, p));
@@ -182,7 +192,7 @@ async function run() {
   // Initial Mesh State Update
   updateMeshState();
 
-  // Play / Pause / Step Controls
+  // Event Listeners for UI Controls
   btnPlayPause.addEventListener('click', () => {
     isPlaying = !isPlaying;
     btnPlayPause.textContent = isPlaying ? 'Pause' : 'Play';
@@ -190,6 +200,14 @@ async function run() {
 
   btnStep.addEventListener('click', () => {
     lattice.step(sourceBus, sinkBus);
+    updateMeshState();
+  });
+
+  btnWireframe.addEventListener('click', () => {
+    material.wireframe = !material.wireframe;
+  });
+
+  chkSlice.addEventListener('change', () => {
     updateMeshState();
   });
 

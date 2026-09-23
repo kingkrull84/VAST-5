@@ -34,7 +34,7 @@
         border: 1px solid #30363d;
         border-radius: 8px;
         padding: 16px;
-        width: 300px;
+        width: 320px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
       }
       #controls-panel h1 {
@@ -46,6 +46,7 @@
         display: flex;
         gap: 8px;
         margin-top: 12px;
+        flex-wrap: wrap;
       }
       button {
         background: #238636;
@@ -53,7 +54,7 @@
         border: none;
         border-radius: 6px;
         padding: 8px 14px;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
         font-weight: 600;
         cursor: pointer;
         transition: background 0.2s;
@@ -77,6 +78,18 @@
       .stat-row span {
         color: #f0f6fc;
         font-weight: 600;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        font-size: 0.85rem;
+        color: #f0f6fc;
+        cursor: pointer;
+      }
+      .checkbox-row input {
+        cursor: pointer;
       }
       #manifest-panel {
         position: absolute;
@@ -135,14 +148,20 @@
 
     <div id="controls-panel">
       <h1>V.A.S.T. 5 Simulation</h1>
-      <div class="stat-row">Selected Element: <span id="selected-label">Element Zero (ID 2)</span></div>
+      <div class="stat-row">Selected Element: <span id="selected-label">Proton (ID 100)</span></div>
       <div class="stat-row">Global Source Bus: <span id="stat-source">0</span></div>
       <div class="stat-row">Global Sink Bus: <span id="stat-sink">0</span></div>
       <div class="stat-row">Active Cells Rendered: <span id="stat-active">0 / 32768</span></div>
 
+      <label class="checkbox-row">
+        <input type="checkbox" id="chk-slice" />
+        Slice View (Z-Axis &le; 15)
+      </label>
+
       <div class="btn-group">
         <button id="btn-play-pause">Play</button>
         <button id="btn-step" class="secondary">Step</button>
+        <button id="btn-wireframe" class="secondary">Toggle Wireframe</button>
       </div>
     </div>
 
