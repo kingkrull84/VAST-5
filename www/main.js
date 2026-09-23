@@ -42,6 +42,8 @@ async function run() {
   const container = document.getElementById('canvas-container');
   const btnPlayPause = document.getElementById('btn-play-pause');
   const btnStep = document.getElementById('btn-step');
+  const btnWireframe = document.getElementById('btn-wireframe');
+  const chkSliceZ = document.getElementById('chk-slice-z');
   const selectedLabel = document.getElementById('selected-label');
   const statSource = document.getElementById('stat-source');
   const statSink = document.getElementById('stat-sink');
@@ -141,6 +143,8 @@ async function run() {
 
     let activeCount = 0;
 
+    const isSliced = chkSliceZ && chkSliceZ.checked;
+
     for (let i = 0; i < totalCells; i++) {
       const p = pressureArray[i];
       const dna = dnaArray[i];
@@ -149,16 +153,19 @@ async function run() {
       const y = Math.floor(i / 32) % 32;
       const z = Math.floor(i / 1024);
 
-      // Hide cell if Element Zero AND pressure is 1
-      if (dna === elemZeroRaw && p === 1) {
-        dummy.position.set(x, y, z);
-        dummy.scale.set(0, 0, 0);
-      } else {
+      dummy.position.set(x, y, z);
+
+      // Threshold condition: ONLY render if particle, extreme vacuum (0), or high spike (>= 5)
+      const passesThreshold = (dna !== elemZeroRaw) || (p === 0) || (p >= 5);
+      const isVisible = passesThreshold && !(isSliced && z > 15);
+
+      if (isVisible) {
         activeCount++;
-        dummy.position.set(x, y, z);
-        const scale = 0.5 + (p / 8.0) * 0.4;
-        dummy.scale.set(scale, scale, scale);
+        dummy.scale.set(1, 1, 1);
+      } else {
+        dummy.scale.set(0, 0, 0);
       }
+
       dummy.updateMatrix();
       instancedMesh.setMatrixAt(i, dummy.matrix);
       instancedMesh.setColorAt(i, getCellColor(dna, p));
@@ -191,6 +198,10 @@ async function run() {
   btnStep.addEventListener('click', () => {
     lattice.step(sourceBus, sinkBus);
     updateMeshState();
+  });
+
+  btnWireframe.addEventListener('click', () => {
+    material.wireframe = !material.wireframe;
   });
 
   // Raycasting for Cell Selection and Element Injection
@@ -247,8 +258,9 @@ async function run() {
 
     if (isPlaying) {
       lattice.step(sourceBus, sinkBus);
-      updateMeshState();
     }
+
+    updateMeshState();
 
     renderer.render(scene, camera);
   }
