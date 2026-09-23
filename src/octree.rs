@@ -1,0 +1,361 @@
+use crate::barrier::{GlobalSinkBus, GlobalSourceBus};
+use crate::manifest::get_tpes_by_id;
+use crate::tpes::Tpes;
+use wasm_bindgen::prelude::*;
+
+pub const LATTICE_SIZE: usize = 32;
+pub const TOTAL_CELLS: usize = LATTICE_SIZE * LATTICE_SIZE * LATTICE_SIZE; // 32,768
+
+// 26 neighbor direction offsets in 3D (excluding center (0,0,0))
+const NEIGHBORS_3D: [(i32, i32, i32); 26] = [
+    (-1, -1, -1), (0, -1, -1), (1, -1, -1),
+    (-1,  0, -1), (0,  0, -1), (1,  0, -1),
+    (-1,  1, -1), (0,  1, -1), (1,  1, -1),
+    (-1, -1,  0), (0, -1,  0), (1, -1,  0),
+    (-1,  0,  0),              (1,  0,  0),
+    (-1,  1,  0), (0,  1,  0), (1,  1,  0),
+    (-1, -1,  1), (0, -1,  1), (1, -1,  1),
+    (-1,  0,  1), (0,  0,  1), (1,  0,  1),
+    (-1,  1,  1), (0,  1,  1), (1,  1,  1),
+];
+
+#[wasm_bindgen]
+pub struct D3Q27Lattice {
+    current_pressure: Box<[u8; TOTAL_CELLS]>,
+    next_pressure: Box<[u8; TOTAL_CELLS]>,
+    dna: Box<[u32; TOTAL_CELLS]>,
+}
+
+#[wasm_bindgen]
+impl D3Q27Lattice {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        let elem_zero_dna = get_tpes_by_id(2)
+            .expect("Element Zero (ID 2) must exist in manifest")
+            .as_u32();
+
+        let current_pressure = Box::new([1u8; TOTAL_CELLS]);
+        let next_pressure = Box::new([1u8; TOTAL_CELLS]);
+        let dna = Box::new([elem_zero_dna; TOTAL_CELLS]);
+
+        Self {
+            current_pressure,
+            next_pressure,
+            dna,
+        }
+    }
+
+    pub fn current_pressure_ptr(&self) -> *const u8 {
+        self.current_pressure.as_ptr()
+    }
+
+    pub fn dna_ptr(&self) -> *const u32 {
+        self.dna.as_ptr()
+    }
+
+    pub fn size(&self) -> usize {
+        TOTAL_CELLS
+    }
+
+    pub fn get_index(x: usize, y: usize, z: usize) -> usize {
+        x + y * LATTICE_SIZE + z * LATTICE_SIZE * LATTICE_SIZE
+    }
+
+    pub fn get_coord_x(index: usize) -> usize {
+        index % LATTICE_SIZE
+    }
+
+    pub fn get_coord_y(index: usize) -> usize {
+        (index / LATTICE_SIZE) % LATTICE_SIZE
+    }
+
+    pub fn get_coord_z(index: usize) -> usize {
+        index / (LATTICE_SIZE * LATTICE_SIZE)
+    }
+
+    pub fn get_neighbor_index(x: usize, y: usize, z: usize, dx: i32, dy: i32, dz: i32) -> usize {
+        let nx = (x as i32 + dx).rem_euclid(LATTICE_SIZE as i32) as usize;
+        let ny = (y as i32 + dy).rem_euclid(LATTICE_SIZE as i32) as usize;
+        let nz = (z as i32 + dz).rem_euclid(LATTICE_SIZE as i32) as usize;
+        Self::get_index(nx, ny, nz)
+    }
+
+    pub fn get_dna(&self, index: usize) -> u32 {
+        self.dna[index]
+    }
+
+    pub fn set_dna(&mut self, index: usize, val: u32) {
+        self.dna[index] = val;
+    }
+
+    pub fn get_current_pressure(&self, index: usize) -> u8 {
+        self.current_pressure[index]
+    }
+
+    pub fn set_current_pressure(&mut self, index: usize, val: u8) {
+        self.current_pressure[index] = val;
+    }
+
+    pub fn get_next_pressure(&self, index: usize) -> u8 {
+        self.next_pressure[index]
+    }
+
+    pub fn set_next_pressure(&mut self, index: usize, val: u8) {
+        self.next_pressure[index] = val;
+    }
+
+    pub fn step(&mut self, source_bus: &GlobalSourceBus, sink_bus: &GlobalSinkBus) {
+        let elem_zero_raw = get_tpes_by_id(2)
+            .expect("Element Zero (ID 2) must exist")
+            .as_u32();
+
+        let positron_raw = get_tpes_by_id(0)
+            .expect("Positron (ID 0) must exist")
+            .as_u32();
+
+        let electron_raw = get_tpes_by_id(1)
+            .expect("Electron (ID 1) must exist")
+            .as_u32();
+
+        // --- Phase 1: Barrier Injection ---
+        for i in 0..TOTAL_CELLS {
+            let cell_dna_raw = self.dna[i];
+            if cell_dna_raw != elem_zero_raw {
+                let cell_tpes = Tpes::from_u32(cell_dna_raw);
+                let p = cell_tpes.positrons() as i64;
+                let e = cell_tpes.electrons() as i64;
+
+                source_bus.add(-p);
+                sink_bus.add(e);
+
+                let cur_p = self.current_pressure[i] as i64;
+                let new_p = (cur_p + p - e).clamp(0, 8) as u8;
+                self.current_pressure[i] = new_p;
+            }
+        }
+
+        // --- Phase 2: Advection / Lock-Free Gather & Phase 3: Tensegrity Shatter ---
+        for i in 0..TOTAL_CELLS {
+            let x = Self::get_coord_x(i);
+            let y = Self::get_coord_y(i);
+            let z = Self::get_coord_z(i);
+            let p_center = self.current_pressure[i];
+
+            let mut higher_count: i16 = 0;
+            let mut lower_count: i16 = 0;
+            let mut max_delta: u8 = 0;
+
+            for &(dx, dy, dz) in &NEIGHBORS_3D {
+                let n_idx = Self::get_neighbor_index(x, y, z, dx, dy, dz);
+                let p_neighbor = self.current_pressure[n_idx];
+
+                if p_neighbor > p_center {
+                    higher_count += 1;
+                    let delta = p_neighbor - p_center;
+                    if delta > max_delta {
+                        max_delta = delta;
+                    }
+                } else if p_neighbor < p_center {
+                    lower_count += 1;
+                    let delta = p_center - p_neighbor;
+                    if delta > max_delta {
+                        max_delta = delta;
+                    }
+                }
+            }
+
+            let next_p = (p_center as i16 + higher_count - lower_count).clamp(0, 8) as u8;
+            self.next_pressure[i] = next_p;
+
+            // Phase 3 Check for Tensegrity Shatter
+            let cell_dna_raw = self.dna[i];
+            let cell_tpes = Tpes::from_u32(cell_dna_raw);
+
+            if cell_tpes.structure() == 3 && max_delta > 6 {
+                let p_apertures = cell_tpes.positrons() as usize;
+                let e_apertures = cell_tpes.electrons() as usize;
+
+                // Revert core to Element Zero
+                self.dna[i] = elem_zero_raw;
+
+                let mut n_idx_list = [0usize; 26];
+                for (n_pos, &(dx, dy, dz)) in NEIGHBORS_3D.iter().enumerate() {
+                    n_idx_list[n_pos] = Self::get_neighbor_index(x, y, z, dx, dy, dz);
+                }
+
+                let mut placed_p = 0;
+                let mut placed_e = 0;
+
+                // Distribute P apertures
+                for n_pos in 0..26 {
+                    if placed_p < p_apertures {
+                        self.dna[n_idx_list[n_pos]] = positron_raw;
+                        placed_p += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Distribute E apertures into subsequent available neighbor cells
+                for n_pos in placed_p..26 {
+                    if placed_e < e_apertures {
+                        self.dna[n_idx_list[n_pos]] = electron_raw;
+                        placed_e += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Overflow Rule: refund unplaced apertures back to source/sink buses
+                let excess_p = (p_apertures - placed_p) as i64;
+                let excess_e = (e_apertures - placed_e) as i64;
+
+                if excess_p > 0 {
+                    source_bus.add(excess_p);
+                }
+                if excess_e > 0 {
+                    sink_bus.add(excess_e);
+                }
+            }
+        }
+
+        // --- Buffer Swap ---
+        std::mem::swap(&mut self.current_pressure, &mut self.next_pressure);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_d3q27_lattice_initialization() {
+        let lattice = D3Q27Lattice::new();
+        assert_eq!(lattice.size(), 32768);
+
+        let elem_zero = get_tpes_by_id(2).unwrap();
+
+        // Verify all 32,768 cells are initialized to Element Zero and pressure 1
+        for i in 0..TOTAL_CELLS {
+            assert_eq!(lattice.get_current_pressure(i), 1);
+            assert_eq!(lattice.get_next_pressure(i), 1);
+
+            let dna_val = lattice.get_dna(i);
+            assert_eq!(dna_val, elem_zero.as_u32());
+
+            let unpacked = Tpes::from_u32(dna_val);
+            assert_eq!(unpacked.tier(), 0);
+            assert_eq!(unpacked.positrons(), 1);
+            assert_eq!(unpacked.electrons(), 1);
+            assert_eq!(unpacked.structure(), 0);
+        }
+    }
+
+    #[test]
+    fn test_pointers() {
+        let lattice = D3Q27Lattice::new();
+        assert!(!lattice.current_pressure_ptr().is_null());
+        assert!(!lattice.dna_ptr().is_null());
+    }
+
+    #[test]
+    fn test_index_mapping_and_mutations() {
+        let mut lattice = D3Q27Lattice::new();
+        let idx = D3Q27Lattice::get_index(10, 15, 20);
+        assert_eq!(idx, 10 + 15 * 32 + 20 * 32 * 32);
+
+        lattice.set_current_pressure(idx, 42);
+        lattice.set_next_pressure(idx, 99);
+        lattice.set_dna(idx, 0x12345678);
+
+        assert_eq!(lattice.get_current_pressure(idx), 42);
+        assert_eq!(lattice.get_next_pressure(idx), 99);
+        assert_eq!(lattice.get_dna(idx), 0x12345678);
+    }
+
+    #[test]
+    fn test_step_phase_1_injection() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(100);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        // Place Proton (ID 100): T2 : P2 : E1 : S3 at cell (5,5,5)
+        let proton = get_tpes_by_id(100).unwrap();
+        let idx = D3Q27Lattice::get_index(5, 5, 5);
+        lattice.set_dna(idx, proton.as_u32());
+
+        // Initial cell pressure is 1
+        assert_eq!(lattice.get_current_pressure(idx), 1);
+
+        lattice.step(&source_bus, &sink_bus);
+
+        // Phase 1 Injection:
+        // P=2 subtracted from source (100 -> 98)
+        // E=1 added to sink (0 -> 1)
+        // Cell pressure delta = +2 -1 = +1 => new current_pressure = 1 + 1 = 2
+        assert_eq!(source_bus.get(), 98);
+        assert_eq!(sink_bus.get(), 1);
+    }
+
+    #[test]
+    fn test_step_phase_2_advection() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(100);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        let center_idx = D3Q27Lattice::get_index(10, 10, 10);
+        // Set higher pressure on center cell
+        lattice.set_current_pressure(center_idx, 5);
+
+        // All other cells have default pressure 1
+        // Center cell (10,10,10) has 26 neighbors with lower pressure (1 < 5)
+        // For center cell: higher_count = 0, lower_count = 26 => next_p = (5 + 0 - 26).clamp(0, 8) = 0
+        // For each neighbor cell: has 1 higher neighbor (center cell) => higher_count = 1, lower_count = 0 => next_p = (1 + 1 - 0) = 2
+
+        lattice.step(&source_bus, &sink_bus);
+
+        // After step & buffer swap, current_pressure reflects new values
+        assert_eq!(lattice.get_current_pressure(center_idx), 0);
+
+        // Verify one neighbor cell
+        let neighbor_idx = D3Q27Lattice::get_index(11, 10, 10);
+        assert_eq!(lattice.get_current_pressure(neighbor_idx), 2);
+    }
+
+    #[test]
+    fn test_step_phase_3_tensegrity_shatter() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(100);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        // Place Proton (ID 100 with S3, P=2, E=1) at cell (15,15,15)
+        let proton = get_tpes_by_id(100).unwrap();
+        let idx = D3Q27Lattice::get_index(15, 15, 15);
+        lattice.set_dna(idx, proton.as_u32());
+        // Set initial pressure of center cell to 0, so after Phase 1 injection (+2 - 1 = +1) pressure is 1
+        lattice.set_current_pressure(idx, 0);
+
+        // Set high pressure 8 on neighbor cell (16,15,15) so delta = 8 - 1 = 7 (> 6)
+        let neighbor_idx = D3Q27Lattice::get_index(16, 15, 15);
+        lattice.set_current_pressure(neighbor_idx, 8);
+
+        lattice.step(&source_bus, &sink_bus);
+
+        // Cell DNA should revert to Element Zero (ID 2)
+        let elem_zero = get_tpes_by_id(2).unwrap();
+        assert_eq!(lattice.get_dna(idx), elem_zero.as_u32());
+
+        // Neighbors should receive Positron and Electron apertures
+        let positron = get_tpes_by_id(0).unwrap();
+        let electron = get_tpes_by_id(1).unwrap();
+
+        // First 2 neighbors get Positrons, 3rd gets Electron
+        let n0 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[0].0, NEIGHBORS_3D[0].1, NEIGHBORS_3D[0].2);
+        let n1 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[1].0, NEIGHBORS_3D[1].1, NEIGHBORS_3D[1].2);
+        let n2 = D3Q27Lattice::get_neighbor_index(15, 15, 15, NEIGHBORS_3D[2].0, NEIGHBORS_3D[2].1, NEIGHBORS_3D[2].2);
+
+        assert_eq!(lattice.get_dna(n0), positron.as_u32());
+        assert_eq!(lattice.get_dna(n1), positron.as_u32());
+        assert_eq!(lattice.get_dna(n2), electron.as_u32());
+    }
+}
