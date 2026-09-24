@@ -33,11 +33,15 @@ async function run() {
 
   const totalCells = lattice.size();
   const elemZeroRaw = get_tpes_by_id(2).as_u32();
+  const electronRaw = get_tpes_by_id(1).as_u32();
 
   // State
   let selectedId = 100; // Default Proton
   let isPlaying = false;
   let vectorMode = false;
+  let spacetimeWarp = true;
+  let emSpectralLens = false;
+  let targetTicksPerSecond = 60;
 
   // DOM Elements
   const container = document.getElementById('canvas-container');
@@ -45,6 +49,10 @@ async function run() {
   const btnStep = document.getElementById('btn-step');
   const btnWireframe = document.getElementById('btn-wireframe');
   const btnVectorMode = document.getElementById('btn-vector-mode');
+  const btnToggleWarp = document.getElementById('btn-toggle-warp');
+  const btnEmLens = document.getElementById('btn-em-lens');
+  const rangeComptonRate = document.getElementById('range-compton-rate');
+  const comptonRateVal = document.getElementById('compton-rate-val');
   const chkSliceZ = document.getElementById('chk-slice-z');
   const selectedLabel = document.getElementById('selected-label');
   const statSource = document.getElementById('stat-source');
@@ -111,13 +119,26 @@ async function run() {
 
   // InstancedMesh Setup for 32x32x32 Grid
   const geometry = new THREE.BoxGeometry(0.85, 0.85, 0.85);
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1 });
+  // Guardrail 3: transparent, depthWrite: false, AdditiveBlending to prevent WebGL depth-sorting artifacts
+  const material = new THREE.MeshStandardMaterial({
+    roughness: 0.3,
+    metalness: 0.1,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
   const instancedMesh = new THREE.InstancedMesh(geometry, material, totalCells);
 
   // InstancedMesh Setup for Vector Flow Cones
   const coneGeometry = new THREE.ConeGeometry(0.2, 0.8, 4);
   coneGeometry.translate(0, 0.4, 0);
-  const vectorMaterial = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1 });
+  const vectorMaterial = new THREE.MeshStandardMaterial({
+    roughness: 0.3,
+    metalness: 0.1,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
   const vectorInstancedMesh = new THREE.InstancedMesh(coneGeometry, vectorMaterial, totalCells);
 
   // ADD INSTANCE MESHES TO SCENE
@@ -129,13 +150,39 @@ async function run() {
   const color = new THREE.Color();
   const upVector = new THREE.Vector3(0, 1, 0);
   const flowVector = new THREE.Vector3();
+  const cellPos = new THREE.Vector3();
+  const totalDisplacement = new THREE.Vector3();
+  const dirToElectron = new THREE.Vector3();
 
   // Helper colors for DNA / pressure visualization
-  function getCellColor(dnaVal, pressure) {
+  function getCellColor(dnaVal, pressure, gradMag = 0) {
     if (dnaVal === elemZeroRaw) {
-      // Color pressure gradient from dark blue (0) to bright cyan/white (8)
-      const t = pressure / 8.0;
-      return color.setHSL(0.55 + t * 0.1, 0.8, 0.2 + t * 0.6);
+      if (emSpectralLens) {
+        // EM Spectrum Mapping based on flow acceleration |∇P|:
+        // gradMag 0: Invisible (0.0)
+        // low (<1.5): Radio/Infrared (Dark Red)
+        // mid (1.5-3.5): Optical (Yellow/Green)
+        // high (3.5-5.5): UV/X-Ray (Blue/Violet)
+        // max (>5.5): Event Horizon Gamma (Magenta)
+        const opacityScale = 0.15; // Prevent additive blow-out
+
+        if (gradMag < 0.1) {
+          color.setHex(0x000000); // Static clear
+        } else if (gradMag < 1.5) {
+          color.setRGB(0.6 * opacityScale, 0.05 * opacityScale, 0.05 * opacityScale); // Infrared
+        } else if (gradMag < 3.5) {
+          color.setRGB(0.7 * opacityScale, 0.8 * opacityScale, 0.1 * opacityScale); // Optical
+        } else if (gradMag < 5.5) {
+          color.setRGB(0.3 * opacityScale, 0.2 * opacityScale, 0.9 * opacityScale); // UV/Violet
+        } else {
+          color.setRGB(1.0 * opacityScale, 0.1 * opacityScale, 0.9 * opacityScale); // Gamma Magenta
+        }
+        return color;
+      } else {
+        // Default pressure gradient from dark blue (0) to bright cyan/white (8)
+        const t = pressure / 8.0;
+        return color.setHSL(0.55 + t * 0.1, 0.8, 0.2 + t * 0.6);
+      }
     }
     const tpes = Tpes.from_u32(dnaVal);
     const struct = tpes.structure();
@@ -170,6 +217,14 @@ async function run() {
 
     const isSliced = chkSliceZ && chkSliceZ.checked;
 
+    // Collect all active Electron positions for Gravity Superposition
+    const electronPositions = [];
+    for (let i = 0; i < totalCells; i++) {
+      if (dnaArray[i] === electronRaw) {
+        electronPositions.push(new THREE.Vector3(i % 32, Math.floor(i / 32) % 32, Math.floor(i / 1024)));
+      }
+    }
+
     for (let i = 0; i < totalCells; i++) {
       const p = pressureArray[i];
       const dna = dnaArray[i];
@@ -178,8 +233,44 @@ async function run() {
       const y = Math.floor(i / 32) % 32;
       const z = Math.floor(i / 1024);
 
-      dummy.position.set(x, y, z);
-      vectorDummy.position.set(x, y, z);
+      cellPos.set(x, y, z);
+      totalDisplacement.set(0, 0, 0);
+
+      if (spacetimeWarp && dna === elemZeroRaw && electronPositions.length > 0) {
+        let maxScaleStretch = 1.0;
+
+        for (let e = 0; e < electronPositions.length; e++) {
+          const ePos = electronPositions[e];
+          dirToElectron.subVectors(ePos, cellPos);
+          const rawDist = dirToElectron.length();
+
+          // Guardrail 2: Clamp distance r to minimum of 1.0 before dividing to prevent NaN
+          const r = Math.max(1.0, rawDist);
+
+          if (r <= 8.0) {
+            dirToElectron.normalize();
+            // Venturi asymptotic warp magnitude k = 0.5
+            const warpMag = 0.5 * (1.0 - r / 8.0) * (1.0 / r);
+            totalDisplacement.addScaledVector(dirToElectron, warpMag);
+
+            const stretchFactor = 1.0 + (1.0 - r / 8.0) * 0.8;
+            if (stretchFactor > maxScaleStretch) {
+              maxScaleStretch = stretchFactor;
+            }
+          }
+        }
+
+        // Clamp combined displacement to prevent grid cells flying out of bounds
+        if (totalDisplacement.length() > 1.5) {
+          totalDisplacement.setLength(1.5);
+        }
+
+        dummy.position.copy(cellPos).add(totalDisplacement);
+        vectorDummy.position.copy(dummy.position);
+      } else {
+        dummy.position.set(x, y, z);
+        vectorDummy.position.set(x, y, z);
+      }
 
       if (vectorMode) {
         if (dna !== elemZeroRaw) {
@@ -231,16 +322,22 @@ async function run() {
         }
       }
 
+      // Calculate local pressure gradient magnitude |∇P|
+      const flowX = getP(x - 1, y, z, pressureArray) - getP(x + 1, y, z, pressureArray);
+      const flowY = getP(x, y - 1, z, pressureArray) - getP(x, y + 1, z, pressureArray);
+      const flowZ = getP(x, y, z - 1, pressureArray) - getP(x, y, z + 1, pressureArray);
+      const gradMag = Math.sqrt(flowX * flowX + flowY * flowY + flowZ * flowZ);
+
       dummy.updateMatrix();
       instancedMesh.setMatrixAt(i, dummy.matrix);
-      instancedMesh.setColorAt(i, getCellColor(dna, p));
+      instancedMesh.setColorAt(i, getCellColor(dna, p, gradMag));
 
       vectorDummy.updateMatrix();
       vectorInstancedMesh.setMatrixAt(i, vectorDummy.matrix);
       if (dna === elemZeroRaw) {
         vectorInstancedMesh.setColorAt(i, getVectorColor(p));
       } else {
-        vectorInstancedMesh.setColorAt(i, getCellColor(dna, p));
+        vectorInstancedMesh.setColorAt(i, getCellColor(dna, p, gradMag));
       }
     }
 
@@ -285,6 +382,29 @@ async function run() {
     btnVectorMode.addEventListener('click', () => {
       vectorMode = !vectorMode;
       updateMeshState();
+    });
+  }
+
+  if (btnToggleWarp) {
+    btnToggleWarp.addEventListener('click', () => {
+      spacetimeWarp = !spacetimeWarp;
+      btnToggleWarp.classList.toggle('secondary', !spacetimeWarp);
+      updateMeshState();
+    });
+  }
+
+  if (btnEmLens) {
+    btnEmLens.addEventListener('click', () => {
+      emSpectralLens = !emSpectralLens;
+      btnEmLens.classList.toggle('secondary', !emSpectralLens);
+      updateMeshState();
+    });
+  }
+
+  if (rangeComptonRate && comptonRateVal) {
+    rangeComptonRate.addEventListener('input', (e) => {
+      targetTicksPerSecond = parseInt(e.target.value, 10) || 60;
+      comptonRateVal.textContent = targetTicksPerSecond;
     });
   }
 
@@ -359,12 +479,26 @@ async function run() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  // Render Loop
-  function animate() {
+  // Render Loop with DeltaTime Compton Tick Accumulator (Guardrail 4)
+  let lastTime = performance.now();
+  let timeAccumulator = 0;
+
+  function animate(now = performance.now()) {
     requestAnimationFrame(animate);
 
+    const delta = now - lastTime;
+    lastTime = now;
+
     if (isPlaying) {
-      lattice.step(sourceBus, sinkBus);
+      timeAccumulator += delta;
+      const stepInterval = 1000 / targetTicksPerSecond;
+
+      while (timeAccumulator >= stepInterval) {
+        lattice.step(sourceBus, sinkBus);
+        timeAccumulator -= stepInterval;
+      }
+    } else {
+      timeAccumulator = 0;
     }
 
     updateMeshState();

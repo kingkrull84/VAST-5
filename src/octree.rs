@@ -109,6 +109,15 @@ impl D3Q27Lattice {
         self.next_pressure[index] = val;
     }
 
+    pub fn inject_ray(&mut self, x: usize, y: usize, z: usize, energy: u8) {
+        if x < LATTICE_SIZE && y < LATTICE_SIZE && z < LATTICE_SIZE {
+            let idx = Self::get_index(x, y, z);
+            let cur_p = self.current_pressure[idx] as u16;
+            let new_p = (cur_p + energy as u16).min(8) as u8;
+            self.current_pressure[idx] = new_p;
+        }
+    }
+
     pub fn step(&mut self, source_bus: &GlobalSourceBus, sink_bus: &GlobalSinkBus) {
         let elem_zero_raw = get_tpes_by_id(2)
             .expect("Element Zero (ID 2) must exist")
@@ -122,10 +131,11 @@ impl D3Q27Lattice {
             .expect("Electron (ID 1) must exist")
             .as_u32();
 
-        // --- Phase 1: Barrier Injection ---
+        // --- Phase 1: Barrier Injection & Event Horizon Consumption ---
+        // 1a. Non-Electron particles process standard barrier injection
         for i in 0..TOTAL_CELLS {
             let cell_dna_raw = self.dna[i];
-            if cell_dna_raw != elem_zero_raw {
+            if cell_dna_raw != elem_zero_raw && cell_dna_raw != electron_raw {
                 let cell_tpes = Tpes::from_u32(cell_dna_raw);
                 let p = cell_tpes.positrons() as i64;
                 let e = cell_tpes.electrons() as i64;
@@ -136,6 +146,39 @@ impl D3Q27Lattice {
                 let cur_p = self.current_pressure[i] as i64;
                 let new_p = (cur_p + p - e).clamp(0, 8) as u8;
                 self.current_pressure[i] = new_p;
+            } else if cell_dna_raw == electron_raw {
+                // Electron cell pressure is pinned at 0 as Schwarzschild aperture
+                self.current_pressure[i] = 0;
+            }
+        }
+
+        // 1b. Event Horizon Consumption for Electron cells (ID 1) BEFORE Phase 2 Advection
+        for i in 0..TOTAL_CELLS {
+            if self.dna[i] == electron_raw {
+                let x = Self::get_coord_x(i);
+                let y = Self::get_coord_y(i);
+                let z = Self::get_coord_z(i);
+
+                let mut highest_p: u8 = 0;
+                let mut target_neighbor_idx: Option<usize> = None;
+
+                for &(dx, dy, dz) in &NEIGHBORS_3D {
+                    if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                        let p_neighbor = self.current_pressure[n_idx];
+                        if p_neighbor > highest_p {
+                            highest_p = p_neighbor;
+                            target_neighbor_idx = Some(n_idx);
+                        }
+                    }
+                }
+
+                if let Some(n_idx) = target_neighbor_idx {
+                    if highest_p > 0 {
+                        // Immediately mutate neighbor's pressure to avoid double-spending
+                        self.current_pressure[n_idx] -= 1;
+                        sink_bus.add(1);
+                    }
+                }
             }
         }
 
@@ -148,87 +191,108 @@ impl D3Q27Lattice {
             let cell_dna_raw = self.dna[i];
             let cell_tpes = Tpes::from_u32(cell_dna_raw);
 
-            let mut higher_count: i16 = 0;
-            let mut lower_count: i16 = 0;
-            let mut max_delta: u8 = 0;
+            if cell_dna_raw != elem_zero_raw {
+                // Non-Element Zero particle cells skip advection and pin pressure
+                self.next_pressure[i] = p_center;
 
-            if cell_dna_raw == elem_zero_raw || cell_tpes.structure() == 3 {
-                for &(dx, dy, dz) in &NEIGHBORS_3D {
-                    if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
-                        let p_neighbor = self.current_pressure[n_idx];
-
-                        if p_neighbor > p_center {
-                            higher_count += 1;
-                            let delta = p_neighbor - p_center;
-                            if delta > max_delta {
-                                max_delta = delta;
-                            }
-                        } else if p_neighbor < p_center {
-                            lower_count += 1;
-                            let delta = p_center - p_neighbor;
+                // Structure 3 cores evaluate neighbor delta for Tensegrity Shatter
+                if cell_tpes.structure() == 3 {
+                    let mut max_delta: u8 = 0;
+                    for &(dx, dy, dz) in &NEIGHBORS_3D {
+                        if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                            let p_neighbor = self.current_pressure[n_idx];
+                            let delta = if p_neighbor > p_center {
+                                p_neighbor - p_center
+                            } else {
+                                p_center - p_neighbor
+                            };
                             if delta > max_delta {
                                 max_delta = delta;
                             }
                         }
                     }
-                }
-            }
 
-            if cell_dna_raw != elem_zero_raw {
-                self.next_pressure[i] = p_center;
+                    if max_delta > 6 {
+                        let p_apertures = cell_tpes.positrons() as usize;
+                        let e_apertures = cell_tpes.electrons() as usize;
+
+                        // Revert core to Element Zero
+                        self.dna[i] = elem_zero_raw;
+
+                        let mut valid_neighbors = Vec::with_capacity(26);
+                        for &(dx, dy, dz) in &NEIGHBORS_3D {
+                            if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                                valid_neighbors.push(n_idx);
+                            }
+                        }
+
+                        let mut placed_p = 0;
+                        let mut placed_e = 0;
+
+                        for &n_idx in &valid_neighbors {
+                            if placed_p < p_apertures {
+                                self.dna[n_idx] = positron_raw;
+                                placed_p += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        for &n_idx in valid_neighbors.iter().skip(placed_p) {
+                            if placed_e < e_apertures {
+                                self.dna[n_idx] = electron_raw;
+                                placed_e += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        let excess_p = (p_apertures - placed_p) as i64;
+                        let excess_e = (e_apertures - placed_e) as i64;
+
+                        if excess_p > 0 {
+                            source_bus.add(excess_p);
+                        }
+                        if excess_e > 0 {
+                            sink_bus.add(excess_e);
+                        }
+                    }
+                }
             } else {
-                let next_p = (p_center as i16 + higher_count - lower_count).clamp(0, 8) as u8;
-                self.next_pressure[i] = next_p;
-            }
-
-            // Phase 3 Check for Tensegrity Shatter
-
-            if cell_tpes.structure() == 3 && max_delta > 6 {
-                let p_apertures = cell_tpes.positrons() as usize;
-                let e_apertures = cell_tpes.electrons() as usize;
-
-                // Revert core to Element Zero
-                self.dna[i] = elem_zero_raw;
-
-                let mut valid_neighbors = Vec::with_capacity(26);
-                for &(dx, dy, dz) in &NEIGHBORS_3D {
-                    if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
-                        valid_neighbors.push(n_idx);
+                // Zero-Overhead Static State Optimization:
+                // Skip advection for Element Zero cells ONLY if P=1 AND all 26 immediate neighbors are also P=1.
+                let mut is_flat = p_center == 1;
+                if is_flat {
+                    for &(dx, dy, dz) in &NEIGHBORS_3D {
+                        if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                            if self.current_pressure[n_idx] != 1 {
+                                is_flat = false;
+                                break;
+                            }
+                        }
                     }
                 }
 
-                let mut placed_p = 0;
-                let mut placed_e = 0;
+                if is_flat {
+                    self.next_pressure[i] = 1;
+                } else {
+                    let mut higher_count: i16 = 0;
+                    let mut lower_count: i16 = 0;
 
-                // Distribute P apertures
-                for &n_idx in &valid_neighbors {
-                    if placed_p < p_apertures {
-                        self.dna[n_idx] = positron_raw;
-                        placed_p += 1;
-                    } else {
-                        break;
+                    for &(dx, dy, dz) in &NEIGHBORS_3D {
+                        if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                            let p_neighbor = self.current_pressure[n_idx];
+
+                            if p_neighbor > p_center {
+                                higher_count += 1;
+                            } else if p_neighbor < p_center {
+                                lower_count += 1;
+                            }
+                        }
                     }
-                }
 
-                // Distribute E apertures into subsequent available neighbor cells
-                for &n_idx in valid_neighbors.iter().skip(placed_p) {
-                    if placed_e < e_apertures {
-                        self.dna[n_idx] = electron_raw;
-                        placed_e += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                // Overflow Rule: refund unplaced apertures back to source/sink buses
-                let excess_p = (p_apertures - placed_p) as i64;
-                let excess_e = (e_apertures - placed_e) as i64;
-
-                if excess_p > 0 {
-                    source_bus.add(excess_p);
-                }
-                if excess_e > 0 {
-                    sink_bus.add(excess_e);
+                    let next_p = (p_center as i16 + higher_count - lower_count).clamp(0, 8) as u8;
+                    self.next_pressure[i] = next_p;
                 }
             }
         }
@@ -412,6 +476,44 @@ mod tests {
         // Phase 2 advection: because dna != elem_zero_raw, next_p is pinned to cur_p (4), NOT advection gather result.
         // After buffer swap, current_pressure should be 4.
         assert_eq!(lattice.get_current_pressure(idx), 4);
+    }
+
+    #[test]
+    fn test_inject_ray() {
+        let mut lattice = D3Q27Lattice::new();
+        let idx = D3Q27Lattice::get_index(5, 5, 5);
+        assert_eq!(lattice.get_current_pressure(idx), 1);
+
+        lattice.inject_ray(5, 5, 5, 3);
+        assert_eq!(lattice.get_current_pressure(idx), 4);
+
+        // Clamp at max pressure 8
+        lattice.inject_ray(5, 5, 5, 10);
+        assert_eq!(lattice.get_current_pressure(idx), 8);
+    }
+
+    #[test]
+    fn test_electron_event_horizon_consumption() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(0);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        let electron = get_tpes_by_id(1).unwrap();
+        let e_idx = D3Q27Lattice::get_index(10, 10, 10);
+        lattice.set_dna(e_idx, electron.as_u32());
+
+        let n1_idx = D3Q27Lattice::get_neighbor_index(10, 10, 10, -1, -1, -1).unwrap();
+        let n2_idx = D3Q27Lattice::get_neighbor_index(10, 10, 10, 1, 1, 1).unwrap();
+
+        lattice.set_current_pressure(n1_idx, 3);
+        lattice.set_current_pressure(n2_idx, 5); // n2_idx has highest pressure 5
+
+        lattice.step(&source_bus, &sink_bus);
+
+        // Electron cell pressure should be pinned at 0
+        assert_eq!(lattice.get_current_pressure(e_idx), 0);
+        // sink_bus incremented by 1
+        assert_eq!(sink_bus.get(), 1);
     }
 
     #[test]
