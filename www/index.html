@@ -145,11 +145,18 @@
         <label for="chk-slice-z" style="cursor: pointer; color: #f0f6fc;">Slice View (Z-Axis)</label>
       </div>
 
-      <div class="btn-group">
+      <div class="stat-row" style="margin-top: 10px; display: flex; flex-direction: column; gap: 4px;">
+        <label for="range-compton-rate" style="color: #f0f6fc;">Compton Rate: <span id="compton-rate-val">60</span> Ticks/sec</label>
+        <input type="range" id="range-compton-rate" min="1" max="60" value="60" style="width: 100%; cursor: pointer;" />
+      </div>
+
+      <div class="btn-group" style="flex-wrap: wrap;">
         <button id="btn-play-pause">Play</button>
         <button id="btn-step" class="secondary">Step</button>
         <button id="btn-wireframe" class="secondary">Toggle Wireframe</button>
         <button id="btn-vector-mode" class="secondary">Toggle Vector Mode</button>
+        <button id="btn-toggle-warp" class="secondary">Toggle Warp</button>
+        <button id="btn-em-lens" class="secondary">EM Spectrum Lens</button>
       </div>
     </div>
 
