@@ -5,19 +5,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 const MANIFEST_ITEMS = [
   { id: 0, name: 'Positron', desc: 'T1 : P1 : E0 : S1' },
   { id: 1, name: 'Electron', desc: 'T1 : P0 : E1 : S2' },
-  { id: 2, name: 'Element Zero', desc: 'T0 : P1 : E1 : S0' },
-  { id: 100, name: 'Proton', desc: 'T2 : P2 : E1 : S3' },
-  { id: 101, name: 'Neutron', desc: 'T2 : P2 : E2 : S3' },
-  { id: 1001, name: 'Hydrogen-1', desc: 'T2 : P2 : E2 : S4' },
-  { id: 1002, name: 'Helium-4', desc: 'T2 : P8 : E8 : S4' },
-  { id: 1003, name: 'Lithium-7', desc: 'T2 : P14 : E14 : S4' },
-  { id: 1004, name: 'Beryllium-9', desc: 'T2 : P18 : E18 : S4' },
-  { id: 1005, name: 'Boron-11', desc: 'T2 : P22 : E22 : S4' },
-  { id: 1006, name: 'Carbon-12', desc: 'T2 : P24 : E24 : S4' },
-  { id: 1007, name: 'Nitrogen-14', desc: 'T2 : P28 : E28 : S4' },
-  { id: 1008, name: 'Oxygen-16', desc: 'T2 : P32 : E32 : S4' },
-  { id: 1009, name: 'Fluorine-19', desc: 'T2 : P38 : E38 : S4' },
-  { id: 1010, name: 'Neon-20', desc: 'T2 : P40 : E40 : S4' }
+  { id: 2, name: 'Element Zero', desc: 'T0 : P1 : E1 : S0' }
 ];
 
 const NEIGHBORS_3D = [
@@ -221,7 +209,6 @@ async function run() {
   const vPos = new THREE.Vector3();
   const dirToElectron = new THREE.Vector3();
   const totalDisplacement = new THREE.Vector3();
-  const displacedPos = new THREE.Vector3();
   const arrowDir = new THREE.Vector3();
 
   // Array to hold displaced 3D positions for all 32,768 lattice vertices
