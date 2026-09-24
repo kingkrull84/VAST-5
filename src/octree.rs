@@ -7,7 +7,7 @@ pub const LATTICE_SIZE: usize = 32;
 pub const TOTAL_CELLS: usize = LATTICE_SIZE * LATTICE_SIZE * LATTICE_SIZE; // 32,768
 
 // 26 neighbor direction offsets in 3D (excluding center (0,0,0))
-const NEIGHBORS_3D: [(i32, i32, i32); 26] = [
+pub const NEIGHBORS_3D: [(i32, i32, i32); 26] = [
     (-1, -1, -1), (0, -1, -1), (1, -1, -1),
     (-1,  0, -1), (0,  0, -1), (1,  0, -1),
     (-1,  1, -1), (0,  1, -1), (1,  1, -1),
@@ -24,6 +24,7 @@ pub struct D3Q27Lattice {
     current_pressure: Box<[u8; TOTAL_CELLS]>,
     next_pressure: Box<[u8; TOTAL_CELLS]>,
     dna: Box<[u32; TOTAL_CELLS]>,
+    orientation: Box<[u8; TOTAL_CELLS]>,
 }
 
 #[wasm_bindgen]
@@ -37,11 +38,13 @@ impl D3Q27Lattice {
         let current_pressure = Box::new([1u8; TOTAL_CELLS]);
         let next_pressure = Box::new([1u8; TOTAL_CELLS]);
         let dna = Box::new([elem_zero_dna; TOTAL_CELLS]);
+        let orientation = Box::new([0u8; TOTAL_CELLS]);
 
         Self {
             current_pressure,
             next_pressure,
             dna,
+            orientation,
         }
     }
 
@@ -51,6 +54,10 @@ impl D3Q27Lattice {
 
     pub fn dna_ptr(&self) -> *const u32 {
         self.dna.as_ptr()
+    }
+
+    pub fn orientation_ptr(&self) -> *const u8 {
+        self.orientation.as_ptr()
     }
 
     pub fn size(&self) -> usize {
@@ -109,6 +116,14 @@ impl D3Q27Lattice {
         self.next_pressure[index] = val;
     }
 
+    pub fn get_orientation(&self, index: usize) -> u8 {
+        self.orientation[index]
+    }
+
+    pub fn set_orientation(&mut self, index: usize, val: u8) {
+        self.orientation[index] = val % 26;
+    }
+
     pub fn inject_ray(&mut self, x: usize, y: usize, z: usize, energy: u8) {
         if x < LATTICE_SIZE && y < LATTICE_SIZE && z < LATTICE_SIZE {
             let idx = Self::get_index(x, y, z);
@@ -135,7 +150,23 @@ impl D3Q27Lattice {
         // 1a. Non-Electron particles process standard barrier injection
         for i in 0..TOTAL_CELLS {
             let cell_dna_raw = self.dna[i];
-            if cell_dna_raw != elem_zero_raw && cell_dna_raw != electron_raw {
+            if cell_dna_raw == positron_raw {
+                // Positron (ID 0) no longer injects omnidirectionally.
+                // It injects 1 pressure unit strictly into the neighbor pointed to by its orientation index.
+                let x = Self::get_coord_x(i);
+                let y = Self::get_coord_y(i);
+                let z = Self::get_coord_z(i);
+                let orient_idx = (self.orientation[i] as usize) % 26;
+                let (dx, dy, dz) = NEIGHBORS_3D[orient_idx];
+
+                source_bus.add(-1);
+
+                if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                    let cur_p = self.current_pressure[n_idx] as u16;
+                    let new_p = (cur_p + 1).min(8) as u8;
+                    self.current_pressure[n_idx] = new_p;
+                }
+            } else if cell_dna_raw != elem_zero_raw && cell_dna_raw != electron_raw {
                 let cell_tpes = Tpes::from_u32(cell_dna_raw);
                 let p = cell_tpes.positrons() as i64;
                 let e = cell_tpes.electrons() as i64;
@@ -158,22 +189,11 @@ impl D3Q27Lattice {
                 let x = Self::get_coord_x(i);
                 let y = Self::get_coord_y(i);
                 let z = Self::get_coord_z(i);
+                let orient_idx = (self.orientation[i] as usize) % 26;
+                let (dx, dy, dz) = NEIGHBORS_3D[orient_idx];
 
-                let mut highest_p: u8 = 0;
-                let mut target_neighbor_idx: Option<usize> = None;
-
-                for &(dx, dy, dz) in &NEIGHBORS_3D {
-                    if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
-                        let p_neighbor = self.current_pressure[n_idx];
-                        if p_neighbor > highest_p {
-                            highest_p = p_neighbor;
-                            target_neighbor_idx = Some(n_idx);
-                        }
-                    }
-                }
-
-                if let Some(n_idx) = target_neighbor_idx {
-                    if highest_p > 0 {
+                if let Some(n_idx) = Self::get_neighbor_index(x, y, z, dx, dy, dz) {
+                    if self.current_pressure[n_idx] > 0 {
                         // Immediately mutate neighbor's pressure to avoid double-spending
                         self.current_pressure[n_idx] -= 1;
                         sink_bus.add(1);
@@ -472,10 +492,10 @@ mod tests {
         // Neighbor cells have pressure 1
         lattice.step(&source_bus, &sink_bus);
 
-        // Phase 1 injection for Positron (P=1, E=0): cur_p = 3 + 1 - 0 = 4.
-        // Phase 2 advection: because dna != elem_zero_raw, next_p is pinned to cur_p (4), NOT advection gather result.
-        // After buffer swap, current_pressure should be 4.
-        assert_eq!(lattice.get_current_pressure(idx), 4);
+        // Positron injects into neighbor (not itself).
+        // Phase 2 advection: because dna != elem_zero_raw, next_p is pinned to cur_p (3).
+        // After buffer swap, current_pressure remains 3.
+        assert_eq!(lattice.get_current_pressure(idx), 3);
     }
 
     #[test]
@@ -501,12 +521,10 @@ mod tests {
         let electron = get_tpes_by_id(1).unwrap();
         let e_idx = D3Q27Lattice::get_index(10, 10, 10);
         lattice.set_dna(e_idx, electron.as_u32());
+        // Default orientation is 0 => NEIGHBORS_3D[0] is (-1, -1, -1)
 
-        let n1_idx = D3Q27Lattice::get_neighbor_index(10, 10, 10, -1, -1, -1).unwrap();
-        let n2_idx = D3Q27Lattice::get_neighbor_index(10, 10, 10, 1, 1, 1).unwrap();
-
-        lattice.set_current_pressure(n1_idx, 3);
-        lattice.set_current_pressure(n2_idx, 5); // n2_idx has highest pressure 5
+        let n0_idx = D3Q27Lattice::get_neighbor_index(10, 10, 10, -1, -1, -1).unwrap();
+        lattice.set_current_pressure(n0_idx, 3);
 
         lattice.step(&source_bus, &sink_bus);
 
@@ -514,6 +532,29 @@ mod tests {
         assert_eq!(lattice.get_current_pressure(e_idx), 0);
         // sink_bus incremented by 1
         assert_eq!(sink_bus.get(), 1);
+    }
+
+    #[test]
+    fn test_positron_oriented_injection() {
+        let mut lattice = D3Q27Lattice::new();
+        let source_bus = GlobalSourceBus::new(100);
+        let sink_bus = GlobalSinkBus::new(0);
+
+        let positron = get_tpes_by_id(0).unwrap();
+        let p_idx = D3Q27Lattice::get_index(10, 10, 10);
+        lattice.set_dna(p_idx, positron.as_u32());
+
+        // Set orientation to 13 => (1, 0, 0)
+        let orient_idx_13 = 13; // NEIGHBORS_3D[13] is (1, 0, 0)
+        lattice.set_orientation(p_idx, orient_idx_13 as u8);
+
+        let target_n_idx = D3Q27Lattice::get_neighbor_index(10, 10, 10, 1, 0, 0).unwrap();
+        assert_eq!(lattice.get_current_pressure(target_n_idx), 1);
+
+        lattice.step(&source_bus, &sink_bus);
+
+        // Positron injected 1 pressure into target neighbor and decremented source_bus
+        assert_eq!(source_bus.get(), 99);
     }
 
     #[test]
